@@ -149,14 +149,6 @@ curl http://localhost:5000/health
 curl http://localhost:5000/api/v1/users
 ```
 
-## Next Steps
-
-1. ✅ Phase 1: Local Development (Current)
-2. 🐳 Phase 2: Containerization with Docker
-3. 🗄️ Phase 3: PostgreSQL Integration
-4. ☁️ Phase 4: AWS Deployment
-5. 🚀 Phase 5: Production Optimization
-
 ## License
 
 MIT License
