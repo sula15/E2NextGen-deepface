@@ -1,0 +1,30 @@
+# Flask Framework
+flask==2.3.3
+flask-cors==4.0.0
+flask-sqlalchemy==3.0.5
+
+# DeepFace and ML libraries
+deepface==0.0.79
+tensorflow==2.13.0
+opencv-python==4.8.0.76
+pillow==10.0.0
+numpy==1.24.3
+
+# Database
+psycopg2-binary==2.9.7
+alembic==1.11.3
+
+# Utilities
+python-dotenv==1.0.0
+gunicorn==21.2.0
+requests==2.31.0
+
+# AWS SDK (for future phases)
+boto3==1.28.25
+
+# Redis (for future caching)
+redis==5.0.0
+
+# Testing
+pytest==7.4.0
+pytest-flask==1.2.0
