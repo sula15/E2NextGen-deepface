@@ -5,6 +5,7 @@ from pathlib import Path
 import base64
 from typing import Dict, List, Optional
 import logging
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class FaceRecognitionService:
                 'threshold': result['threshold'],
                 'model': self.model_name,
                 'detector': self.detector_backend,
-                'similarity': 1 - (result['distance'] / result['threshold'])
+                'similarity': 1 - (result['distance'] / result['threshold']) if result['threshold'] > 0 else 0
             }
         except Exception as e:
             logger.error(f"Face verification failed: {str(e)}")
@@ -93,43 +94,148 @@ class FaceRecognitionService:
         """
         try:
             logger.info(f"Recognizing face from: {img_path}")
+            logger.info(f"Searching database: {db_path}")
             
-            dfs = DeepFace.find(
-                img_path=img_path,
-                db_path=db_path,
-                model_name=self.model_name,
-                detector_backend=self.detector_backend,
-                distance_metric=self.distance_metric,
-                enforce_detection=False,
-                silent=True
-            )
+            # Check if database has any users
+            db_path_obj = Path(db_path)
+            if not db_path_obj.exists() or not any(db_path_obj.iterdir()):
+                logger.warning("Face database is empty")
+                return []
             
-            if len(dfs) > 0 and not dfs[0].empty:
-                results = []
-                for _, row in dfs[0].iterrows():
-                    # Extract user_id from identity path
-                    identity_path = Path(row['identity'])
-                    user_id = identity_path.parent.name
-                    
-                    results.append({
-                        'user_id': user_id,
-                        'identity': str(row['identity']),
-                        'distance': float(row[self.distance_metric]),
-                        'threshold': float(row['threshold']),
-                        'verified': row[self.distance_metric] < row['threshold']
-                    })
+            try:
+                dfs = DeepFace.find(
+                    img_path=img_path,
+                    db_path=db_path,
+                    model_name=self.model_name,
+                    detector_backend=self.detector_backend,
+                    distance_metric=self.distance_metric,
+                    enforce_detection=False,
+                    silent=True
+                )
+            except Exception as find_error:
+                logger.error(f"DeepFace.find error: {str(find_error)}")
+                # If find fails, try manual comparison
+                return self._manual_recognition(img_path, db_path)
+            
+            results = []
+            
+            # Handle different return formats from DeepFace
+            if isinstance(dfs, list) and len(dfs) > 0:
+                df = dfs[0]
                 
-                # Sort by distance (best match first)
-                results.sort(key=lambda x: x['distance'])
-                logger.info(f"Found {len(results)} matches")
-                return results
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    for _, row in df.iterrows():
+                        try:
+                            # Extract user_id from identity path
+                            identity_path = Path(row['identity'])
+                            user_id = identity_path.parent.name
+                            
+                            # Get distance value based on metric
+                            distance_col = f'{self.model_name}_{self.distance_metric}'
+                            if distance_col in row:
+                                distance = float(row[distance_col])
+                            elif self.distance_metric in row:
+                                distance = float(row[self.distance_metric])
+                            else:
+                                # Fallback: try to find any distance column
+                                distance_cols = [col for col in row.index if 'distance' in col.lower() or self.distance_metric in col.lower()]
+                                if distance_cols:
+                                    distance = float(row[distance_cols[0]])
+                                else:
+                                    logger.warning(f"Could not find distance column. Available columns: {list(row.index)}")
+                                    continue
+                            
+                            # Get threshold
+                            threshold_col = f'{self.model_name}_threshold'
+                            if threshold_col in row:
+                                threshold = float(row[threshold_col])
+                            elif 'threshold' in row:
+                                threshold = float(row['threshold'])
+                            else:
+                                # Use default threshold for the model
+                                threshold = self._get_default_threshold()
+                            
+                            results.append({
+                                'user_id': user_id,
+                                'identity': str(row['identity']),
+                                'distance': distance,
+                                'threshold': threshold,
+                                'verified': distance < threshold
+                            })
+                        except Exception as row_error:
+                            logger.error(f"Error processing row: {str(row_error)}")
+                            continue
+                    
+                    # Sort by distance (best match first)
+                    results.sort(key=lambda x: x['distance'])
+                    logger.info(f"Found {len(results)} matches")
             
-            logger.info("No matches found")
-            return []
+            return results
             
         except Exception as e:
             logger.error(f"Face recognition failed: {str(e)}")
             raise Exception(f"Recognition failed: {str(e)}")
+    
+    def _manual_recognition(self, img_path: str, db_path: str) -> List[Dict]:
+        """
+        Manual recognition by comparing against all database images
+        Fallback when DeepFace.find fails
+        """
+        try:
+            logger.info("Using manual recognition fallback")
+            results = []
+            
+            # Extract embedding from query image
+            query_embedding = self.extract_embedding(img_path)
+            if query_embedding is None:
+                return []
+            
+            # Iterate through all user directories
+            db_path_obj = Path(db_path)
+            for user_dir in db_path_obj.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                
+                user_id = user_dir.name
+                
+                # Compare against all images for this user
+                for img_file in user_dir.glob('*.jpg'):
+                    try:
+                        result = self.verify_faces(img_path, str(img_file))
+                        
+                        results.append({
+                            'user_id': user_id,
+                            'identity': str(img_file),
+                            'distance': result['distance'],
+                            'threshold': result['threshold'],
+                            'verified': result['verified']
+                        })
+                    except Exception as e:
+                        logger.error(f"Error comparing with {img_file}: {str(e)}")
+                        continue
+            
+            # Sort by distance
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Manual recognition found {len(results)} matches")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Manual recognition failed: {str(e)}")
+            return []
+    
+    def _get_default_threshold(self) -> float:
+        """Get default threshold for the current model and metric"""
+        thresholds = {
+            'VGG-Face': {'cosine': 0.40, 'euclidean': 0.60},
+            'Facenet': {'cosine': 0.40, 'euclidean': 10},
+            'Facenet512': {'cosine': 0.30, 'euclidean': 23.56},
+            'ArcFace': {'cosine': 0.68, 'euclidean': 4.15},
+            'Dlib': {'cosine': 0.07, 'euclidean': 0.6},
+            'SFace': {'cosine': 0.593, 'euclidean': 10.734},
+        }
+        
+        return thresholds.get(self.model_name, {}).get(self.distance_metric, 0.40)
     
     def extract_embedding(self, img_path: str) -> Optional[List[float]]:
         """

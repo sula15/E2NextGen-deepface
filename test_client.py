@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 
-BASE_URL = 'http://localhost:5000/api/v1'
+BASE_URL = 'http://localhost:5001/api/v1'
 
 
 def encode_image(image_path):
@@ -23,7 +23,7 @@ def encode_image(image_path):
 def health_check():
     """Check API health"""
     print("\n=== Health Check ===")
-    response = requests.get('http://localhost:5000/health')
+    response = requests.get('http://localhost:5001/health')
     print(json.dumps(response.json(), indent=2))
 
 

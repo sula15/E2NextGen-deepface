@@ -5,6 +5,7 @@ from pathlib import Path
 import uuid
 import os
 from datetime import datetime
+import glob
 
 from app.services.face_service import FaceRecognitionService
 from app.models.database import db, User, AttendanceRecord
@@ -22,6 +23,20 @@ def get_face_service():
         detector_backend=current_app.config['DEEPFACE_DETECTOR'],
         distance_metric=current_app.config['DISTANCE_METRIC']
     )
+
+
+def _clear_deepface_cache():
+    """
+    Clear DeepFace representation cache files
+    This ensures newly enrolled users are included in recognition
+    """
+    try:
+        cache_files = glob.glob(str(Path(current_app.config['DATABASE_FOLDER']) / 'representations_*.pkl'))
+        for cache_file in cache_files:
+            os.remove(cache_file)
+            logger.info(f"Cleared DeepFace cache: {cache_file}")
+    except Exception as e:
+        logger.warning(f"Failed to clear cache: {str(e)}")
 
 
 @bp.route('/verify', methods=['POST'])
@@ -112,7 +127,7 @@ def recognize():
                     if data.get('log_attendance', False):
                         attendance = AttendanceRecord(
                             user_id=user.id,
-                            confidence_score=1 - (best_match['distance'] / best_match['threshold']),
+                            confidence_score=1 - (best_match['distance'] / best_match['threshold']) if best_match['threshold'] > 0 else 0,
                             location=data.get('location', 'Unknown'),
                             status='present',
                             image_path=img_path  # Keep image for record
@@ -125,7 +140,7 @@ def recognize():
                         'success': True,
                         'recognized': True,
                         'user': user.to_dict(),
-                        'confidence': 1 - (best_match['distance'] / best_match['threshold']),
+                        'confidence': 1 - (best_match['distance'] / best_match['threshold']) if best_match['threshold'] > 0 else 0,
                         'distance': best_match['distance'],
                         'threshold': best_match['threshold'],
                         'all_matches': results[:5]  # Return top 5 matches
@@ -227,6 +242,9 @@ def enroll():
             db.session.add(new_user)
             db.session.commit()
             
+            # Clear DeepFace cache to include new user in future recognitions
+            _clear_deepface_cache()
+            
             logger.info(f"User enrolled: {user_id}")
             
             return jsonify({
@@ -317,6 +335,9 @@ def delete_user(user_id):
         db.session.delete(user)
         db.session.commit()
         
+        # Clear cache after deleting user
+        _clear_deepface_cache()
+        
         logger.info(f"User deleted: {user_id}")
         
         return jsonify({
@@ -371,6 +392,23 @@ def get_attendance():
         
     except Exception as e:
         logger.error(f"Get attendance error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+
+
+@bp.route('/cache/clear', methods=['POST'])
+def clear_cache():
+    """Manually clear DeepFace cache"""
+    try:
+        _clear_deepface_cache()
+        return jsonify({
+            'success': True,
+            'message': 'Cache cleared successfully'
+        }), 200
+    except Exception as e:
+        logger.error(f"Clear cache error: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)
