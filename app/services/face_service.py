@@ -18,6 +18,25 @@ class FaceRecognitionService:
         self.detector_backend = detector_backend
         self.distance_metric = distance_metric
         logger.info(f"FaceRecognitionService initialized with model={model_name}, detector={detector_backend}")
+
+    def calculate_distance(self, source_representation: List[float], test_representation: List[float]) -> float:
+        """
+        Calculate distance between two face representations
+        """
+        source = np.array(source_representation)
+        test = np.array(test_representation)
+
+        if self.distance_metric == 'cosine':
+            a = np.matmul(np.transpose(source), test)
+            b = np.sum(np.multiply(source, source))
+            c = np.sum(np.multiply(test, test))
+            return 1 - (a / (np.sqrt(b) * np.sqrt(c)))
+        elif self.distance_metric == 'euclidean':
+            return np.linalg.norm(source - test)
+        elif self.distance_metric == 'euclidean_l2':
+            return np.linalg.norm(source - test)
+        else:
+            raise ValueError(f"Unknown distance metric: {self.distance_metric}")
     
     def decode_base64_image(self, base64_string: str) -> np.ndarray:
         """
@@ -81,6 +100,63 @@ class FaceRecognitionService:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
     
+    def recognize_from_memory(self, img_path: str, known_embeddings: List[Dict]) -> List[Dict]:
+        """
+        Identify face by comparing against in-memory embeddings
+
+        Args:
+            img_path: Path to image to recognize
+            known_embeddings: List of dicts with 'user_id' and 'embedding'
+
+        Returns:
+            List of matches with identity and distance
+        """
+        try:
+            logger.info(f"Recognizing face from memory using {len(known_embeddings)} known embeddings")
+
+            # Extract embedding from query image
+            target_embedding = self.extract_embedding(img_path)
+            if target_embedding is None:
+                return []
+
+            results = []
+            default_threshold = self._get_default_threshold()
+
+            for item in known_embeddings:
+                try:
+                    user_id = item['user_id']
+                    user_embedding = item['embedding']
+
+                    if not user_embedding:
+                        continue
+
+                    distance = self.calculate_distance(target_embedding, user_embedding)
+
+                    # Use provided threshold or default
+                    threshold = default_threshold
+
+                    if distance <= threshold:
+                         results.append({
+                            'user_id': user_id,
+                            'distance': distance,
+                            'threshold': threshold,
+                            'verified': True
+                        })
+
+                except Exception as e:
+                    logger.error(f"Error processing embedding for user {item.get('user_id')}: {str(e)}")
+                    continue
+
+            # Sort by distance (best match first)
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Found {len(results)} matches from memory")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Face recognition from memory failed: {str(e)}")
+            raise Exception(f"Recognition failed: {str(e)}")
+
     def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
         """
         Identify face from database (1:N matching)
