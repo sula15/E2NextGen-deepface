@@ -5,7 +5,6 @@ from pathlib import Path
 import uuid
 import os
 from datetime import datetime
-import glob
 
 from app.services.face_service import FaceRecognitionService
 from app.models.database import db, User, AttendanceRecord
@@ -23,20 +22,6 @@ def get_face_service():
         detector_backend=current_app.config['DEEPFACE_DETECTOR'],
         distance_metric=current_app.config['DISTANCE_METRIC']
     )
-
-
-def _clear_deepface_cache():
-    """
-    Clear DeepFace representation cache files
-    This ensures newly enrolled users are included in recognition
-    """
-    try:
-        cache_files = glob.glob(str(Path(current_app.config['DATABASE_FOLDER']) / 'representations_*.pkl'))
-        for cache_file in cache_files:
-            os.remove(cache_file)
-            logger.info(f"Cleared DeepFace cache: {cache_file}")
-    except Exception as e:
-        logger.warning(f"Failed to clear cache: {str(e)}")
 
 
 @bp.route('/verify', methods=['POST'])
@@ -114,8 +99,14 @@ def recognize():
         
         try:
             # Recognize face
-            db_path = str(current_app.config['DATABASE_FOLDER'])
-            results = face_service.recognize_face(img_path, db_path)
+            # Fetch all active users with embeddings
+            users = User.query.filter(User.embedding.isnot(None), User.is_active == True).all()
+            known_embeddings = [
+                {'user_id': user.user_id, 'embedding': user.embedding}
+                for user in users
+            ]
+
+            results = face_service.recognize_from_memory(img_path, known_embeddings)
             
             if results and len(results) > 0:
                 # Get best match
@@ -242,9 +233,6 @@ def enroll():
             db.session.add(new_user)
             db.session.commit()
             
-            # Clear DeepFace cache to include new user in future recognitions
-            _clear_deepface_cache()
-            
             logger.info(f"User enrolled: {user_id}")
             
             return jsonify({
@@ -335,9 +323,6 @@ def delete_user(user_id):
         db.session.delete(user)
         db.session.commit()
         
-        # Clear cache after deleting user
-        _clear_deepface_cache()
-        
         logger.info(f"User deleted: {user_id}")
         
         return jsonify({
@@ -402,10 +387,10 @@ def get_attendance():
 def clear_cache():
     """Manually clear DeepFace cache"""
     try:
-        _clear_deepface_cache()
+        # Cache clearing is no longer needed as we use database embeddings
         return jsonify({
             'success': True,
-            'message': 'Cache cleared successfully'
+            'message': 'Cache cleared successfully (No-op: Database embeddings used)'
         }), 200
     except Exception as e:
         logger.error(f"Clear cache error: {str(e)}")
