@@ -298,3 +298,87 @@ class FaceRecognitionService:
         except Exception as e:
             logger.error(f"Face analysis failed: {str(e)}")
             raise Exception(f"Analysis failed: {str(e)}")
+
+    def recognize_from_embeddings(self, img_path: str, known_embeddings: List[Dict]) -> List[Dict]:
+        """
+        Recognize face by comparing against a list of known embeddings.
+
+        Args:
+            img_path: Path to the input image.
+            known_embeddings: List of dicts, each containing 'user_id' and 'embedding'.
+
+        Returns:
+            List of matches.
+        """
+        try:
+            logger.info(f"Recognizing from embeddings: {len(known_embeddings)} users")
+
+            # 1. Extract embedding of the input image
+            target_embedding = self.extract_embedding(img_path)
+            if target_embedding is None:
+                return []
+
+            target_embedding = np.array(target_embedding)
+
+            # 2. Vectorized comparison
+            user_ids = []
+            embeddings_list = []
+            identities = []
+
+            for item in known_embeddings:
+                if item.get('embedding'):
+                    user_ids.append(item.get('user_id'))
+                    embeddings_list.append(item.get('embedding'))
+                    identities.append(item.get('identity', item.get('user_id')))
+
+            if not embeddings_list:
+                return []
+
+            embeddings_matrix = np.array(embeddings_list)
+
+            # Calculate distances
+            if self.distance_metric == 'cosine':
+                # Cosine distance = 1 - cosine_similarity
+                dot_products = np.dot(embeddings_matrix, target_embedding)
+                norm_target = np.linalg.norm(target_embedding)
+                norms_db = np.linalg.norm(embeddings_matrix, axis=1)
+
+                # Avoid division by zero
+                norms_db[norms_db == 0] = 1e-10
+                if norm_target == 0:
+                    norm_target = 1e-10
+
+                similarities = dot_products / (norms_db * norm_target)
+                distances = 1 - similarities
+
+            elif self.distance_metric == 'euclidean':
+                # Euclidean distance
+                diff = embeddings_matrix - target_embedding
+                distances = np.linalg.norm(diff, axis=1)
+            else:
+                # Default to euclidean
+                diff = embeddings_matrix - target_embedding
+                distances = np.linalg.norm(diff, axis=1)
+
+            # Threshold
+            threshold = self._get_default_threshold()
+            results = []
+
+            for i, distance in enumerate(distances):
+                if distance <= threshold:
+                    results.append({
+                        'user_id': user_ids[i],
+                        'identity': identities[i],
+                        'distance': float(distance),
+                        'threshold': threshold,
+                        'verified': True
+                    })
+
+            # 3. Sort
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Found {len(results)} matches from embeddings")
+            return results
+
+        except Exception as e:
+            logger.error(f"Recognition from embeddings failed: {str(e)}")
+            raise Exception(f"Recognition failed: {str(e)}")
