@@ -81,19 +81,29 @@ class FaceRecognitionService:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
     
-    def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
+    def recognize_face(self, img_path: str, db_path: str, known_users: Optional[List[Dict]] = None) -> List[Dict]:
         """
         Identify face from database (1:N matching)
         
         Args:
             img_path: Path to image to recognize
             db_path: Path to face database directory
+            known_users: Optional list of users with pre-calculated embeddings for faster lookup
             
         Returns:
             List of matches with identity and distance
         """
         try:
             logger.info(f"Recognizing face from: {img_path}")
+
+            # fast path: in-memory vectorized search
+            if known_users is not None:
+                logger.info(f"Using vectorized recognition with {len(known_users)} known users")
+                embedding = self.extract_embedding(img_path)
+                if embedding:
+                    return self._vectorized_recognition(embedding, known_users)
+                return []
+
             logger.info(f"Searching database: {db_path}")
             
             # Check if database has any users
@@ -176,6 +186,75 @@ class FaceRecognitionService:
             logger.error(f"Face recognition failed: {str(e)}")
             raise Exception(f"Recognition failed: {str(e)}")
     
+    def _vectorized_recognition(self, target_embedding: List[float], known_users: List[Dict]) -> List[Dict]:
+        """
+        Perform vectorized face recognition using numpy (fast in-memory)
+
+        Args:
+            target_embedding: Embedding of the face to recognize
+            known_users: List of dicts with keys 'user_id', 'embedding', etc.
+
+        Returns:
+            List of matches
+        """
+        if not known_users:
+            return []
+
+        try:
+            target = np.array(target_embedding)
+            # Ensure known_users have embeddings
+            valid_users = [u for u in known_users if u.get('embedding')]
+            if not valid_users:
+                return []
+
+            known_embeddings = np.array([u['embedding'] for u in valid_users])
+
+            if self.distance_metric == 'cosine':
+                # Cosine distance = 1 - (A . B) / (||A|| * ||B||)
+                target_norm = np.linalg.norm(target)
+                target_normalized = target / target_norm if target_norm > 0 else target
+
+                known_norms = np.linalg.norm(known_embeddings, axis=1, keepdims=True)
+                # Avoid division by zero
+                known_norms[known_norms == 0] = 1
+                known_normalized = known_embeddings / known_norms
+
+                similarities = np.dot(known_normalized, target_normalized)
+                distances = 1 - similarities
+
+            elif self.distance_metric in ['euclidean', 'euclidean_l2']:
+                # Euclidean distance
+                diff = known_embeddings - target
+                distances = np.sqrt(np.sum(diff**2, axis=1))
+
+            else:
+                logger.warning(f"Metric {self.distance_metric} not supported for vectorized search. Using fallback.")
+                return []
+
+            results = []
+            threshold = self._get_default_threshold()
+
+            # Filter results
+            for i, distance in enumerate(distances):
+                if distance <= threshold:
+                    user = valid_users[i]
+                    results.append({
+                        'user_id': user['user_id'],
+                        'identity': user.get('name', user['user_id']),
+                        'distance': float(distance),
+                        'threshold': threshold,
+                        'verified': True
+                    })
+
+            # Sort by distance
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Vectorized recognition found {len(results)} matches")
+            return results
+
+        except Exception as e:
+            logger.error(f"Vectorized recognition error: {str(e)}")
+            return []
+
     def _manual_recognition(self, img_path: str, db_path: str) -> List[Dict]:
         """
         Manual recognition by comparing against all database images
