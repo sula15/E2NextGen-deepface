@@ -81,6 +81,83 @@ class FaceRecognitionService:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
     
+    def recognize_from_embeddings(self, img_path: str, known_embeddings: List[Dict]) -> List[Dict]:
+        """
+        Identify face using in-memory embeddings from database
+
+        Args:
+            img_path: Path to image to recognize
+            known_embeddings: List of dicts with 'user_id', 'embedding' keys
+
+        Returns:
+            List of matches with identity and distance
+        """
+        try:
+            logger.info(f"Recognizing face from embeddings: {img_path}")
+
+            if not known_embeddings:
+                logger.warning("No known embeddings provided")
+                return []
+
+            # Extract embedding from query image
+            # We reuse extract_embedding method which handles detection
+            query_embedding = self.extract_embedding(img_path)
+
+            if query_embedding is None:
+                return []
+
+            query_vec = np.array(query_embedding)
+            results = []
+
+            # Get threshold for current model
+            threshold = self._get_default_threshold()
+
+            for item in known_embeddings:
+                try:
+                    user_embedding = item.get('embedding')
+                    if not user_embedding:
+                        continue
+
+                    target_vec = np.array(user_embedding)
+
+                    # Calculate distance
+                    distance = 0.0
+                    if self.distance_metric == 'cosine':
+                        # Cosine distance = 1 - cosine_similarity
+                        dot_product = np.dot(query_vec, target_vec)
+                        norm_a = np.linalg.norm(query_vec)
+                        norm_b = np.linalg.norm(target_vec)
+                        similarity = dot_product / (norm_a * norm_b)
+                        distance = 1 - similarity
+                    elif self.distance_metric == 'euclidean':
+                        distance = np.linalg.norm(query_vec - target_vec)
+                    elif self.distance_metric == 'euclidean_l2':
+                        distance = np.linalg.norm(query_vec - target_vec)
+
+                    verified = distance < threshold
+
+                    if verified:
+                        results.append({
+                            'user_id': item.get('user_id'),
+                            'identity': item.get('face_image_path') or item.get('identity') or item.get('user_id'),
+                            'distance': float(distance),
+                            'threshold': threshold,
+                            'verified': True
+                        })
+                except Exception as e:
+                    logger.error(f"Error comparing embedding for {item.get('user_id')}: {str(e)}")
+                    continue
+
+            # Sort by distance
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Found {len(results)} matches from embeddings")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Recognition from embeddings failed: {str(e)}")
+            raise Exception(f"Recognition failed: {str(e)}")
+
     def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
         """
         Identify face from database (1:N matching)

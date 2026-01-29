@@ -113,9 +113,28 @@ def recognize():
         img_path = save_uploaded_file(data['image'], f"recognize_{uuid.uuid4()}.jpg")
         
         try:
-            # Recognize face
-            db_path = str(current_app.config['DATABASE_FOLDER'])
-            results = face_service.recognize_face(img_path, db_path)
+            # Recognize face using stored embeddings if available
+            # ⚡ Optimization: Use in-memory comparison instead of disk scan
+            users = User.query.filter(User.embedding.isnot(None), User.is_active == True).all()
+
+            results = []
+            if users:
+                known_embeddings = []
+                for user in users:
+                    if user.embedding:
+                        known_embeddings.append({
+                            'user_id': user.user_id,
+                            'embedding': user.embedding,
+                            'face_image_path': user.face_image_path
+                        })
+
+                results = face_service.recognize_from_embeddings(img_path, known_embeddings)
+
+            # Fallback to file-based recognition if no results from embeddings (or no users with embeddings)
+            # This handles cases where DB might be out of sync or empty
+            if not results and (not users or not known_embeddings):
+                db_path = str(current_app.config['DATABASE_FOLDER'])
+                results = face_service.recognize_face(img_path, db_path)
             
             if results and len(results) > 0:
                 # Get best match
