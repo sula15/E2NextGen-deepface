@@ -115,7 +115,22 @@ def recognize():
         try:
             # Recognize face
             db_path = str(current_app.config['DATABASE_FOLDER'])
-            results = face_service.recognize_face(img_path, db_path)
+
+            # Optimization: Try to use in-memory vector comparison first
+            known_embeddings = []
+            try:
+                active_users = User.query.filter(User.is_active == True, User.embedding.isnot(None)).all()
+                for user in active_users:
+                    if user.embedding:
+                        known_embeddings.append({
+                            'user_id': user.user_id,
+                            'identity': user.face_image_path,
+                            'embedding': user.embedding
+                        })
+            except Exception as db_err:
+                logger.warning(f"Failed to fetch embeddings for optimization: {str(db_err)}")
+
+            results = face_service.recognize_face(img_path, db_path, known_embeddings=known_embeddings)
             
             if results and len(results) > 0:
                 # Get best match

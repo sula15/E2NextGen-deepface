@@ -81,19 +81,28 @@ class FaceRecognitionService:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
     
-    def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
+    def recognize_face(self, img_path: str, db_path: str, known_embeddings: List[Dict] = None) -> List[Dict]:
         """
         Identify face from database (1:N matching)
         
         Args:
             img_path: Path to image to recognize
             db_path: Path to face database directory
+            known_embeddings: Optional list of dicts with 'user_id' and 'embedding'
             
         Returns:
             List of matches with identity and distance
         """
         try:
             logger.info(f"Recognizing face from: {img_path}")
+
+            if known_embeddings:
+                logger.info(f"Using in-memory vectorized recognition with {len(known_embeddings)} embeddings")
+                target_embedding = self.extract_embedding(img_path)
+                if target_embedding:
+                    return self._vectorized_recognition(target_embedding, known_embeddings)
+                return []
+
             logger.info(f"Searching database: {db_path}")
             
             # Check if database has any users
@@ -176,6 +185,72 @@ class FaceRecognitionService:
             logger.error(f"Face recognition failed: {str(e)}")
             raise Exception(f"Recognition failed: {str(e)}")
     
+    def _vectorized_recognition(self, target_embedding: List[float], known_embeddings: List[Dict]) -> List[Dict]:
+        """
+        Perform in-memory vectorized face recognition
+        """
+        try:
+            target_vector = np.array(target_embedding)
+            threshold = self._get_default_threshold()
+            results = []
+
+            for item in known_embeddings:
+                try:
+                    if 'embedding' not in item or not item['embedding']:
+                        continue
+
+                    source_vector = np.array(item['embedding'])
+
+                    if self.distance_metric == 'cosine':
+                        distance = self._find_cosine_distance(source_vector, target_vector)
+                    elif self.distance_metric == 'euclidean':
+                        distance = self._find_euclidean_distance(source_vector, target_vector)
+                    elif self.distance_metric == 'euclidean_l2':
+                         # Normalize for L2
+                        norm_source = source_vector / np.linalg.norm(source_vector)
+                        norm_target = target_vector / np.linalg.norm(target_vector)
+                        distance = self._find_euclidean_distance(norm_source, norm_target)
+                    else:
+                        # Default to cosine
+                        distance = self._find_cosine_distance(source_vector, target_vector)
+
+                    if distance <= threshold:
+                        results.append({
+                            'user_id': item['user_id'],
+                            'identity': item.get('identity', item['user_id']),
+                            'distance': float(distance),
+                            'threshold': threshold,
+                            'verified': True
+                        })
+                except Exception as e:
+                    logger.error(f"Error processing embedding for {item.get('user_id')}: {str(e)}")
+                    continue
+
+            results.sort(key=lambda x: x['distance'])
+            return results
+
+        except Exception as e:
+            logger.error(f"Vectorized recognition failed: {str(e)}")
+            return []
+
+    def _find_cosine_distance(self, source_representation, test_representation):
+        a = np.matmul(np.transpose(source_representation), test_representation)
+        b = np.sum(np.multiply(source_representation, source_representation))
+        c = np.sum(np.multiply(test_representation, test_representation))
+        return 1 - (a / (np.sqrt(b) * np.sqrt(c)))
+
+    def _find_euclidean_distance(self, source_representation, test_representation):
+        if isinstance(source_representation, list):
+            source_representation = np.array(source_representation)
+
+        if isinstance(test_representation, list):
+            test_representation = np.array(test_representation)
+
+        euclidean_distance = source_representation - test_representation
+        euclidean_distance = np.sum(np.multiply(euclidean_distance, euclidean_distance))
+        euclidean_distance = np.sqrt(euclidean_distance)
+        return euclidean_distance
+
     def _manual_recognition(self, img_path: str, db_path: str) -> List[Dict]:
         """
         Manual recognition by comparing against all database images
