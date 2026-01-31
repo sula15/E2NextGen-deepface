@@ -114,9 +114,29 @@ def recognize():
         
         try:
             # Recognize face
-            db_path = str(current_app.config['DATABASE_FOLDER'])
-            results = face_service.recognize_face(img_path, db_path)
-            
+            # Fetch active users with embeddings from database
+            # Optimize: fetch only necessary columns
+            users = User.query.with_entities(
+                User.user_id, User.embedding
+            ).filter(
+                User.is_active, User.embedding.isnot(None)
+            ).all()
+
+            known_users = [
+                {'user_id': u.user_id, 'embedding': u.embedding}
+                for u in users
+            ]
+
+            # Use vectorized recognition
+            results = face_service.recognize_face_from_embeddings(
+                img_path, known_users
+            )
+
+            # Fallback to file-based recognition only if DB is empty
+            if not known_users:
+                db_path = str(current_app.config['DATABASE_FOLDER'])
+                results = face_service.recognize_face(img_path, db_path)
+
             if results and len(results) > 0:
                 # Get best match
                 best_match = results[0]
