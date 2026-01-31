@@ -81,6 +81,123 @@ class FaceRecognitionService:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
     
+    def recognize_face_from_embeddings(
+        self, img_path: str, known_users: List[Dict]
+    ) -> List[Dict]:
+        """
+        Identify face using pre-computed embeddings (Vectorized)
+
+        Args:
+            img_path: Path to query image
+            known_users: List of dicts with 'user_id' and 'embedding'
+
+        Returns:
+            List of matches with identity and distance
+        """
+        try:
+            logger.info(f"Recognizing face from embeddings for: {img_path}")
+
+            if not known_users:
+                logger.warning("No known users provided for embedding search")
+                return []
+
+            # 1. Extract embedding for query image
+            query_embedding = self.extract_embedding(img_path)
+            if query_embedding is None:
+                return []
+
+            # 2. Convert to numpy arrays
+            # Filter valid users and extract embeddings
+            valid_users = [
+                u for u in known_users
+                if u.get('embedding') and isinstance(u['embedding'], list)
+            ]
+
+            if not valid_users:
+                logger.warning("No valid embeddings found in known_users")
+                return []
+
+            db_embeddings = np.array([u['embedding'] for u in valid_users])
+            user_ids = [u['user_id'] for u in valid_users]
+
+            # Query embedding: shape (1, embedding_dim)
+            target_embedding = np.array(query_embedding).reshape(1, -1)
+
+            # 3. Calculate distances
+            distances = []
+
+            if self.distance_metric == 'cosine':
+                # Normalize
+                target_norm = target_embedding / np.linalg.norm(
+                    target_embedding, axis=1, keepdims=True
+                )
+                db_norm = db_embeddings / np.linalg.norm(
+                    db_embeddings, axis=1, keepdims=True
+                )
+
+                # Cosine distance = 1 - cosine_similarity
+                similarities = np.dot(db_norm, target_norm.T).flatten()
+                distances = 1 - similarities
+
+            elif self.distance_metric == 'euclidean':
+                # Euclidean distance
+                diff = db_embeddings - target_embedding
+                distances = np.linalg.norm(diff, axis=1)
+
+            elif self.distance_metric == 'euclidean_l2':
+                # Euclidean L2 distance
+                target_norm = target_embedding / np.linalg.norm(
+                    target_embedding, axis=1, keepdims=True
+                )
+                db_norm = db_embeddings / np.linalg.norm(
+                    db_embeddings, axis=1, keepdims=True
+                )
+                diff = db_norm - target_norm
+                distances = np.linalg.norm(diff, axis=1)
+
+            else:
+                # Fallback to cosine if unknown
+                logger.warning(
+                    f"Unknown metric {self.distance_metric}, "
+                    "falling back to cosine"
+                )
+                target_norm = target_embedding / np.linalg.norm(
+                    target_embedding, axis=1, keepdims=True
+                )
+                db_norm = db_embeddings / np.linalg.norm(
+                    db_embeddings, axis=1, keepdims=True
+                )
+                similarities = np.dot(db_norm, target_norm.T).flatten()
+                distances = 1 - similarities
+
+            # 4. Filter by threshold
+            threshold = self._get_default_threshold()
+            results = []
+
+            for i, distance in enumerate(distances):
+                # Ensure distance is float
+                dist_val = float(distance)
+
+                # Filter matches
+                if dist_val <= threshold:
+                    results.append({
+                        'user_id': user_ids[i],
+                        'distance': dist_val,
+                        'threshold': threshold,
+                        'verified': True,
+                        # Compatibility with old return format
+                        'identity': user_ids[i]
+                    })
+
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Vectorized recognition found {len(results)} matches")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Vectorized recognition failed: {str(e)}")
+            raise Exception(f"Vectorized recognition failed: {str(e)}")
+
     def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
         """
         Identify face from database (1:N matching)
