@@ -80,6 +80,110 @@ class FaceRecognitionService:
         except Exception as e:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
+
+    def recognize_from_embeddings(self, img_path: str, known_embeddings: List[Dict]) -> List[Dict]:
+        """
+        Identify face by comparing embedding against known embeddings (vectorized)
+
+        Args:
+            img_path: Path to image to recognize
+            known_embeddings: List of dicts with 'user_id' and 'embedding' keys
+
+        Returns:
+            List of matches with identity and distance
+        """
+        try:
+            logger.info(f"Recognizing face using {len(known_embeddings)} known embeddings")
+
+            if not known_embeddings:
+                return []
+
+            # Extract embedding from query image
+            target_embedding = self.extract_embedding(img_path)
+            if target_embedding is None:
+                return []
+
+            target_vector = np.array(target_embedding)
+
+            # Prepare known vectors
+            known_vectors = []
+            user_ids = []
+
+            for item in known_embeddings:
+                if item.get('embedding'):
+                    known_vectors.append(item['embedding'])
+                    user_ids.append(item['user_id'])
+
+            if not known_vectors:
+                return []
+
+            known_matrix = np.array(known_vectors)
+
+            # Calculate distances
+            threshold = self._get_default_threshold()
+            distances = []
+
+            if self.distance_metric == 'cosine':
+                # Cosine distance = 1 - (A . B) / (||A|| * ||B||)
+                # Ensure vectors are normalized
+                target_norm = np.linalg.norm(target_vector)
+                # Compute norms for all known vectors
+                known_norms = np.linalg.norm(known_matrix, axis=1)
+
+                # Avoid division by zero
+                if target_norm == 0:
+                    return []
+
+                # Calculate similarities
+                dot_products = np.dot(known_matrix, target_vector)
+                # Avoid division by zero in similarities
+                # Replace 0 norms with 1 to avoid NaN (the dot product will be 0 anyway if norm is 0)
+                known_norms = np.where(known_norms == 0, 1, known_norms)
+
+                similarities = dot_products / (known_norms * target_norm)
+
+                # Clamp similarities to [-1, 1] to avoid floating point errors
+                similarities = np.clip(similarities, -1.0, 1.0)
+
+                distances = 1.0 - similarities
+
+            elif self.distance_metric == 'euclidean':
+                # Euclidean distance = ||A - B||
+                # Use broadcasting to subtract target from all known vectors
+                diff = known_matrix - target_vector
+                distances = np.linalg.norm(diff, axis=1)
+
+            elif self.distance_metric == 'euclidean_l2':
+                 # L2 Euclidean = || A/||A|| - B/||B|| ||
+                 target_normalized = target_vector / np.linalg.norm(target_vector)
+                 known_normalized = known_matrix / np.linalg.norm(known_matrix, axis=1, keepdims=True)
+                 diff = known_normalized - target_normalized
+                 distances = np.linalg.norm(diff, axis=1)
+
+            else:
+                raise ValueError(f"Unsupported distance metric: {self.distance_metric}")
+
+            # Create results
+            results = []
+            for i, distance in enumerate(distances):
+                is_verified = distance <= threshold
+
+                results.append({
+                    'user_id': user_ids[i],
+                    'identity': f"db_embedding_{user_ids[i]}",
+                    'distance': float(distance),
+                    'threshold': threshold,
+                    'verified': bool(is_verified)
+                })
+
+            # Sort by distance
+            results.sort(key=lambda x: x['distance'])
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Vectorized recognition failed: {str(e)}")
+            raise e
     
     def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
         """
