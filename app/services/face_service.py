@@ -224,6 +224,77 @@ class FaceRecognitionService:
             logger.error(f"Manual recognition failed: {str(e)}")
             return []
     
+    def _calculate_distance(self, embedding1: List[float], embedding2: List[float]) -> float:
+        """Calculate distance between two embeddings based on metric"""
+        a = np.array(embedding1)
+        b = np.array(embedding2)
+
+        if self.distance_metric == 'cosine':
+            denom = (np.linalg.norm(a) * np.linalg.norm(b))
+            if denom == 0:
+                return 1.0
+            return 1 - (np.dot(a, b) / denom)
+        elif self.distance_metric == 'euclidean':
+            return float(np.linalg.norm(a - b))
+        elif self.distance_metric == 'euclidean_l2':
+            return float(np.linalg.norm(a - b))
+        else:
+            # Fallback to cosine
+            denom = (np.linalg.norm(a) * np.linalg.norm(b))
+            if denom == 0:
+                return 1.0
+            return 1 - (np.dot(a, b) / denom)
+
+    def recognize_from_embeddings(self, img_path: str, embeddings: List[Dict]) -> List[Dict]:
+        """
+        Identify face by comparing embeddings directly (faster)
+
+        Args:
+            img_path: Path to query image
+            embeddings: List of dicts with 'user_id' and 'embedding'
+
+        Returns:
+            List of matches sorted by distance
+        """
+        try:
+            logger.info(f"Recognizing face from embeddings (count={len(embeddings)})")
+
+            # Extract embedding from query image
+            query_embedding = self.extract_embedding(img_path)
+            if query_embedding is None:
+                return []
+
+            results = []
+            threshold = self._get_default_threshold()
+
+            for item in embeddings:
+                if 'embedding' not in item or not item['embedding']:
+                    continue
+
+                try:
+                    distance = self._calculate_distance(query_embedding, item['embedding'])
+
+                    if distance < threshold:
+                        results.append({
+                            'user_id': item['user_id'],
+                            'distance': distance,
+                            'threshold': threshold,
+                            'verified': True
+                        })
+                except Exception as e:
+                    logger.error(f"Error comparing embedding for user {item.get('user_id')}: {str(e)}")
+                    continue
+
+            # Sort by distance (best match first)
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Found {len(results)} matches from embeddings")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Recognition from embeddings failed: {str(e)}")
+            raise Exception(f"Recognition failed: {str(e)}")
+
     def _get_default_threshold(self) -> float:
         """Get default threshold for the current model and metric"""
         thresholds = {
