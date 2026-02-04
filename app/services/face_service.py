@@ -81,19 +81,37 @@ class FaceRecognitionService:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
     
-    def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
+    def recognize_face(
+        self,
+        img_path: str,
+        db_path: str,
+        known_embeddings: Optional[List[Dict]] = None
+    ) -> List[Dict]:
         """
         Identify face from database (1:N matching)
         
         Args:
             img_path: Path to image to recognize
             db_path: Path to face database directory
+            known_embeddings: Optional list of dicts with 'user_id' and
+                            'embedding' to skip file scan
             
         Returns:
             List of matches with identity and distance
         """
         try:
             logger.info(f"Recognizing face from: {img_path}")
+
+            # Optimization: Use known embeddings if provided
+            if known_embeddings is not None and len(known_embeddings) > 0:
+                logger.info(
+                    f"Using {len(known_embeddings)} known embeddings"
+                )
+                return self._recognize_from_embeddings(
+                    img_path,
+                    known_embeddings
+                )
+
             logger.info(f"Searching database: {db_path}")
             
             # Check if database has any users
@@ -175,6 +193,77 @@ class FaceRecognitionService:
         except Exception as e:
             logger.error(f"Face recognition failed: {str(e)}")
             raise Exception(f"Recognition failed: {str(e)}")
+
+    def _recognize_from_embeddings(
+        self,
+        img_path: str,
+        known_embeddings: List[Dict]
+    ) -> List[Dict]:
+        """
+        Recognize face using in-memory embeddings (Optimization)
+        """
+        try:
+            # Extract embedding from query image
+            query_embedding = self.extract_embedding(img_path)
+            if query_embedding is None:
+                return []
+
+            results = []
+            threshold = self._get_default_threshold()
+
+            # Convert query to numpy array once
+            query_vec = np.array(query_embedding)
+
+            for item in known_embeddings:
+                user_id = item.get('user_id')
+                target_embedding = item.get('embedding')
+
+                if not user_id or not target_embedding:
+                    continue
+
+                target_vec = np.array(target_embedding)
+
+                # Calculate distance
+                if self.distance_metric == 'cosine':
+                    # Cosine distance: 1 - (A . B) / (||A|| * ||B||)
+                    dot_product = np.dot(query_vec, target_vec)
+                    norm_query = np.linalg.norm(query_vec)
+                    norm_target = np.linalg.norm(target_vec)
+
+                    if norm_query == 0 or norm_target == 0:
+                        distance = 1.0
+                    else:
+                        # Ensure value is within [-1, 1] to avoid float errors
+                        similarity = dot_product / (norm_query * norm_target)
+                        distance = 1.0 - similarity
+
+                elif self.distance_metric == 'euclidean':
+                    # Euclidean distance: sqrt(sum((A - B)^2))
+                    distance = np.linalg.norm(query_vec - target_vec)
+
+                else:
+                    # Fallback to L2/Euclidean
+                    distance = np.linalg.norm(query_vec - target_vec)
+
+                # Filter by threshold
+                if distance <= threshold:
+                    results.append({
+                        'user_id': user_id,
+                        'identity': f"database_{user_id}",
+                        'distance': float(distance),
+                        'threshold': threshold,
+                        'verified': True
+                    })
+
+            # Sort by distance
+            results.sort(key=lambda x: x['distance'])
+            logger.info(f"Found {len(results)} matches from embeddings")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Embedding recognition failed: {str(e)}")
+            raise e
     
     def _manual_recognition(self, img_path: str, db_path: str) -> List[Dict]:
         """
