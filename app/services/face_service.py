@@ -80,6 +80,106 @@ class FaceRecognitionService:
         except Exception as e:
             logger.error(f"Face verification failed: {str(e)}")
             raise Exception(f"Verification failed: {str(e)}")
+
+    def compute_face_matches(self, target_embedding: List[float], known_embeddings: List[Dict]) -> List[Dict]:
+        """
+        Compute distances between target embedding and known embeddings using vectorized operations.
+        Faster than iterative DeepFace.verify or DeepFace.find with file scanning.
+
+        Args:
+            target_embedding: Embedding vector of the face to recognize
+            known_embeddings: List of dicts, each containing 'embedding' key and user metadata
+
+        Returns:
+            List of matches sorted by distance
+        """
+        if not known_embeddings:
+            return []
+
+        try:
+            # Convert to numpy arrays
+            target_vector = np.array(target_embedding, dtype=np.float32)
+
+            # Extract embedding vectors from known_embeddings list
+            # Ensure they are all the same length (should be if model is consistent)
+            embeddings_list = [item['embedding'] for item in known_embeddings]
+            if not embeddings_list:
+                return []
+
+            known_matrix = np.array(embeddings_list, dtype=np.float32)
+
+            # Calculate distances based on metric
+            if self.distance_metric == 'cosine':
+                # Cosine Distance = 1 - Cosine Similarity
+                # Cosine Sim = (A . B) / (||A|| * ||B||)
+
+                # Normalize vectors to unit length
+                target_norm = np.linalg.norm(target_vector)
+                known_norms = np.linalg.norm(known_matrix, axis=1)
+
+                # Avoid division by zero
+                if target_norm == 0:
+                    return []
+
+                # Handle zero vectors in known embeddings
+                known_norms[known_norms == 0] = 1e-10
+
+                dot_products = np.dot(known_matrix, target_vector)
+                similarities = dot_products / (known_norms * target_norm)
+                distances = 1 - similarities
+
+            elif self.distance_metric == 'euclidean':
+                # Euclidean Distance = sqrt(sum((A - B)^2))
+                # diff = known_matrix - target_vector (broadcasting)
+                diff = known_matrix - target_vector
+                distances = np.linalg.norm(diff, axis=1)
+
+            elif self.distance_metric == 'euclidean_l2':
+                # L2-normalized Euclidean Distance
+                target_norm = target_vector / (np.linalg.norm(target_vector) + 1e-10)
+                known_norm = known_matrix / (np.linalg.norm(known_matrix, axis=1, keepdims=True) + 1e-10)
+                diff = known_norm - target_norm
+                distances = np.linalg.norm(diff, axis=1)
+
+            else:
+                # Default to cosine if unknown
+                logger.warning(f"Unknown distance metric {self.distance_metric}, defaulting to cosine")
+                target_norm = np.linalg.norm(target_vector)
+                known_norms = np.linalg.norm(known_matrix, axis=1)
+                if target_norm == 0:
+                    return []
+                known_norms[known_norms == 0] = 1e-10
+                dot_products = np.dot(known_matrix, target_vector)
+                similarities = dot_products / (known_norms * target_norm)
+                distances = 1 - similarities
+
+            # Get threshold
+            threshold = self._get_default_threshold()
+
+            results = []
+            for i, dist in enumerate(distances):
+                user_data = known_embeddings[i]
+                # Create result dict based on user data
+                result = {
+                    'distance': float(dist),
+                    'threshold': threshold,
+                    'verified': float(dist) < threshold
+                }
+                # Copy other keys from user_data (like user_id, name, etc)
+                for k, v in user_data.items():
+                    if k != 'embedding':
+                        result[k] = v
+                results.append(result)
+
+            # Sort by distance (best match first)
+            results.sort(key=lambda x: x['distance'])
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error computing face matches: {str(e)}")
+            # Fallback or re-raise? Returning empty list is safer for now.
+            return []
     
     def recognize_face(self, img_path: str, db_path: str) -> List[Dict]:
         """

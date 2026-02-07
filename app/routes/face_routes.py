@@ -113,38 +113,68 @@ def recognize():
         img_path = save_uploaded_file(data['image'], f"recognize_{uuid.uuid4()}.jpg")
         
         try:
-            # Recognize face
-            db_path = str(current_app.config['DATABASE_FOLDER'])
-            results = face_service.recognize_face(img_path, db_path)
+            # Optimize: Extract embedding once and compare with DB embeddings
+            # This avoids scanning the file system and re-computing embeddings
             
+            # 1. Extract embedding from input image
+            embedding = face_service.extract_embedding(img_path)
+
+            if embedding is None:
+                return jsonify({
+                    'success': True,
+                    'recognized': False,
+                    'message': 'No face detected in input image'
+                }), 200
+
+            # 2. Get all active users with embeddings from DB
+            users = User.query.filter(User.is_active == True, User.embedding.isnot(None)).all()
+
+            results = []
+            if users:
+                # Prepare known embeddings list
+                known_embeddings = [
+                    {
+                        'user_id': u.user_id,
+                        'embedding': u.embedding,
+                        'name': u.name
+                    }
+                    for u in users
+                ]
+
+                # 3. Compute matches using vectorized operations
+                results = face_service.compute_face_matches(embedding, known_embeddings)
+
             if results and len(results) > 0:
                 # Get best match
                 best_match = results[0]
-                user = User.query.filter_by(user_id=best_match['user_id']).first()
                 
-                if user:
-                    # Optionally log attendance
-                    if data.get('log_attendance', False):
-                        attendance = AttendanceRecord(
-                            user_id=user.id,
-                            confidence_score=1 - (best_match['distance'] / best_match['threshold']) if best_match['threshold'] > 0 else 0,
-                            location=data.get('location', 'Unknown'),
-                            status='present',
-                            image_path=img_path  # Keep image for record
-                        )
-                        db.session.add(attendance)
-                        db.session.commit()
-                        img_path = None  # Don't delete if logged
+                # Check verification status
+                if best_match['verified']:
+                    user = User.query.filter_by(user_id=best_match['user_id']).first()
                     
-                    return jsonify({
-                        'success': True,
-                        'recognized': True,
-                        'user': user.to_dict(),
-                        'confidence': 1 - (best_match['distance'] / best_match['threshold']) if best_match['threshold'] > 0 else 0,
-                        'distance': best_match['distance'],
-                        'threshold': best_match['threshold'],
-                        'all_matches': results[:5]  # Return top 5 matches
-                    }), 200
+                    if user:
+                        # Optionally log attendance
+                        if data.get('log_attendance', False):
+                            attendance = AttendanceRecord(
+                                user_id=user.id,
+                                confidence_score=1 - (best_match['distance'] / best_match['threshold']) if best_match['threshold'] > 0 else 0,
+                                location=data.get('location', 'Unknown'),
+                                status='present',
+                                image_path=img_path  # Keep image for record
+                            )
+                            db.session.add(attendance)
+                            db.session.commit()
+                            img_path = None  # Don't delete if logged
+
+                        return jsonify({
+                            'success': True,
+                            'recognized': True,
+                            'user': user.to_dict(),
+                            'confidence': 1 - (best_match['distance'] / best_match['threshold']) if best_match['threshold'] > 0 else 0,
+                            'distance': best_match['distance'],
+                            'threshold': best_match['threshold'],
+                            'all_matches': results[:5]  # Return top 5 matches
+                        }), 200
             
             return jsonify({
                 'success': True,
