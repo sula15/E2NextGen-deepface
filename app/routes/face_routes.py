@@ -115,7 +115,19 @@ def recognize():
         try:
             # Recognize face
             db_path = str(current_app.config['DATABASE_FOLDER'])
-            results = face_service.recognize_face(img_path, db_path)
+
+            # OPTIMIZATION: Get known embeddings from database
+            users = User.query.filter(User.is_active == True, User.embedding.isnot(None)).all()
+            known_embeddings = [
+                {
+                    'user_id': user.user_id,
+                    'embedding': user.embedding,
+                    'face_image_path': user.face_image_path
+                }
+                for user in users
+            ]
+
+            results = face_service.recognize_face(img_path, db_path, known_embeddings=known_embeddings)
             
             if results and len(results) > 0:
                 # Get best match
